@@ -1,0 +1,217 @@
+diff --git a/autologout.services.yml b/autologout.services.yml
+index f821b9f..1360dff 100644
+--- a/autologout.services.yml
++++ b/autologout.services.yml
+@@ -3,7 +3,7 @@ services:
+     class: Drupal\autologout\EventSubscriber\AutologoutSubscriber
+     tags:
+       - {name: event_subscriber}
+-    arguments: ['@autologout.manager', '@current_user', '@config.factory','@theme.manager','@datetime.time']
++    arguments: ['@autologout.manager', '@current_user', '@config.factory','@theme.manager','@datetime.time', '@request_stack']
+ 
+   autologout.manager:
+     class: Drupal\autologout\AutologoutManager
+diff --git a/src/AutologoutManager.php b/src/AutologoutManager.php
+index 1495177..03285c6 100644
+--- a/src/AutologoutManager.php
++++ b/src/AutologoutManager.php
+@@ -13,7 +13,6 @@ use Drupal\user\Entity\User;
+ use Drupal\Core\Session\AnonymousUserSession;
+ use Drupal\user\UserData;
+ use Drupal\Component\Utility\Xss;
+-use Drupal\Core\StringTranslation\StringTranslationTrait;
+ 
+ /**
+  * Defines an AutologoutManager service.
+@@ -158,7 +157,7 @@ class AutologoutManager implements AutologoutManagerInterface {
+     $message = Xss::filter($this->autoLogoutSettings->get('inactivity_message'));
+     $type = $this->autoLogoutSettings->get('inactivity_message_type');
+     if (!empty($message)) {
+-      $this->messenger->addMessage($this->t($message), $type);
++      $this->messenger->addMessage($this->messenger->t($message), $type);
+     }
+   }
+ 
+@@ -292,7 +291,7 @@ class AutologoutManager implements AutologoutManagerInterface {
+   public function getUserRedirectUrl($uid = NULL) {
+     if (is_null($uid)) {
+       // If $uid is not provided, use the logged in user.
+-      $user = \Drupal::currentUser();
++      $user = $this->currentUser;
+     }
+     else {
+       $user = User::load($uid);
+diff --git a/src/EventSubscriber/AutologoutSubscriber.php b/src/EventSubscriber/AutologoutSubscriber.php
+index 8cbc038..0f931be 100644
+--- a/src/EventSubscriber/AutologoutSubscriber.php
++++ b/src/EventSubscriber/AutologoutSubscriber.php
+@@ -7,6 +7,7 @@ use Drupal\Component\Datetime\TimeInterface;
+ use Drupal\Core\Config\ConfigFactory;
+ use Drupal\Core\Session\AccountInterface;
+ use Drupal\Core\Theme\ThemeManager;
++use Symfony\Component\HttpFoundation\RequestStack;
+ use Symfony\Component\HttpKernel\KernelEvents;
+ use Symfony\Component\HttpKernel\Event\GetResponseEvent;
+ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
+@@ -51,6 +52,13 @@ class AutologoutSubscriber implements EventSubscriberInterface {
+    */
+   protected $time;
+ 
++  /**
++   * The request stack.
++   *
++   * @var \Symfony\Component\HttpFoundation\RequestStack
++   */
++  protected $requestStack;
++
+   /**
+    * Constructs an AutologoutSubscriber object.
+    *
+@@ -64,13 +72,16 @@ class AutologoutSubscriber implements EventSubscriberInterface {
+    *   The theme manager service.
+    * @param \Drupal\Component\Datetime\TimeInterface $time
+    *   The time service.
++   * @param \Symfony\Component\HttpFoundation\RequestStack $request_stack
++   *   The request stack.
+    */
+-  public function __construct(AutologoutManagerInterface $autologout, AccountInterface $account, ConfigFactory $config, ThemeManager $theme, TimeInterface $time) {
++  public function __construct(AutologoutManagerInterface $autologout, AccountInterface $account, ConfigFactory $config, ThemeManager $theme, TimeInterface $time, RequestStack $request_stack) {
+     $this->autoLogoutManager = $autologout;
+     $this->currentUser = $account;
+     $this->config = $config;
+     $this->theme = $theme;
+     $this->time = $time;
++    $this->requestStack = $request_stack;
+   }
+ 
+   /**
+@@ -81,11 +92,14 @@ class AutologoutSubscriber implements EventSubscriberInterface {
+    */
+   public function onRequest(GetResponseEvent $event) {
+     $autologout_manager = $this->autoLogoutManager;
++    $requestStack = $this->requestStack;
+ 
+     $uid = $this->currentUser->id();
+ 
+     if ($uid == 0) {
+-      if (!empty($_GET['autologout_timeout']) && $_GET['autologout_timeout'] == 1 && empty($_POST)) {
++      if (!empty($requestStack->getCurrentRequest()->query->get('autologout_timeout')) &&
++        $requestStack->getCurrentRequest()->query->get('autologout_timeout') == 1 &&
++        empty($requestStack->getCurrentRequest()->request)) {
+         $autologout_manager->inactivityMessage();
+       }
+       return;
+diff --git a/tests/src/Functional/AutologoutTest.php b/tests/src/Functional/AutologoutTest.php
+index 7d36f9a..3a7ae7b 100644
+--- a/tests/src/Functional/AutologoutTest.php
++++ b/tests/src/Functional/AutologoutTest.php
+@@ -3,6 +3,7 @@
+ namespace Drupal\Tests\autologout\Functional;
+ 
+ use Drupal\Tests\BrowserTestBase;
++use Drupal\Core\StringTranslation\StringTranslationTrait;
+ 
+ /**
+  * Tests the autologout's features.
+@@ -13,6 +14,8 @@ use Drupal\Tests\BrowserTestBase;
+  */
+ class AutologoutTest extends BrowserTestBase {
+ 
++  use StringTranslationTrait;
++
+   /**
+    * Modules to enable.
+    *
+@@ -206,7 +209,7 @@ class AutologoutTest extends BrowserTestBase {
+     $this->drupalGet('autologout_alt_logout');
+     $this->assertSession()->statusCodeEquals(200);
+     $this->assertSession()->pageTextContains(
+-      t('You have been logged out due to inactivity.')
++      $this->t('You have been logged out due to inactivity.')
+     );
+ 
+     // Check further logout requests result in access denied.
+@@ -260,10 +263,10 @@ class AutologoutTest extends BrowserTestBase {
+     $this->drupalPostForm(
+       'admin/config/people/autologout',
+       $edit,
+-      t('Save configuration')
++      $this->t('Save configuration')
+     );
+     $this->assertSession()->pageTextContains(
+-      t('The configuration options have been saved.')
++      $this->t('The configuration options have been saved.')
+     );
+ 
+     // Test that out of range values are picked up.
+@@ -280,10 +283,10 @@ class AutologoutTest extends BrowserTestBase {
+     $this->drupalPostForm(
+       'admin/config/people/autologout',
+       $edit,
+-      t('Save configuration')
++      $this->t('Save configuration')
+     );
+     $this->assertSession()->pageTextNotContains(
+-      t('The configuration options have been saved.')
++      $this->t('The configuration options have been saved.')
+     );
+ 
+     // Test that out of range values are picked up.
+@@ -300,10 +303,10 @@ class AutologoutTest extends BrowserTestBase {
+     $this->drupalPostForm(
+       'admin/config/people/autologout',
+       $edit,
+-      t('Save configuration')
++      $this->t('Save configuration')
+     );
+     $this->assertSession()->pageTextNotContains(
+-      t('The configuration options have been saved.')
++      $this->t('The configuration options have been saved.')
+     );
+ 
+     // Test that role timeouts are not validated for disabled roles.
+@@ -321,13 +324,13 @@ class AutologoutTest extends BrowserTestBase {
+     $this->drupalPostForm(
+       'admin/config/people/autologout',
+       $edit,
+-      t('Save configuration')
++      $this->t('Save configuration')
+     );
+     $this->assertSession()->pageTextContains(
+-      t('The configuration options have been saved.')
++      $this->t('The configuration options have been saved.')
+     );
+-    $this->drupalPostForm('admin/config/people/autologout', $edit, t('Save configuration'));
+-    $this->assertText(t('The configuration options have been saved.'), 'Unable to save autologout due to out of range role timeout for a role which is not enabled..');
++    $this->drupalPostForm('admin/config/people/autologout', $edit, $this->t('Save configuration'));
++    $this->assertText($this->t('The configuration options have been saved.'), 'Unable to save autologout due to out of range role timeout for a role which is not enabled.');
+ 
+     // Test clearing of users individual timeout when this becomes disabled.
+     $uid = $this->privilegedUser->id();
+@@ -336,7 +339,7 @@ class AutologoutTest extends BrowserTestBase {
+ 
+     // Turn off individual settings.
+     $edit['no_individual_logout_threshold'] = TRUE;
+-    $this->drupalPostForm('admin/config/people/autologout', $edit, t('Save configuration'));
++    $this->drupalPostForm('admin/config/people/autologout', $edit, $this->t('Save configuration'));
+ 
+     // Expected is that default value is returned, not user-overriden value.
+     $this->assertAutotimeout($uid, 1500, 'User timeout is cleared when setting no_individual_logout_threshold is activated.');
+@@ -364,7 +367,7 @@ class AutologoutTest extends BrowserTestBase {
+     $this->assertSession()->statusCodeEquals(403);
+     self::assertFalse($this->drupalUserIsLoggedIn($this->privilegedUser));
+     $this->assertSession()->pageTextContains(
+-      t('You have been logged out due to inactivity.')
++      $this->t('You have been logged out due to inactivity.')
+     );
+   }
+ 
+@@ -440,7 +443,7 @@ class AutologoutTest extends BrowserTestBase {
+     $this->drupalGet('admin/reports/status');
+     self::assertFalse($this->drupalUserIsLoggedIn($this->privilegedUser));
+     $this->assertSession()->pageTextContains(
+-      t('You have been logged out due to inactivity.')
++      $this->t('You have been logged out due to inactivity.')
+     );
+   }
+ 

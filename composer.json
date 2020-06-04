@@ -93,7 +93,8 @@
             "drupal/core": {
             },
             "drupal/autologout": {
-                "AutologoutManager class incompatible with interface": "https://www.drupal.org/files/issues/2020-03-20/3121214-autologout_manager_incompatible_interface.patch"
+                "AutologoutManager class incompatible with interface": "https://www.drupal.org/files/issues/2020-03-20/3121214-autologout_manager_incompatible_interface.patch",
+                "Coding Standards (temporary patch for testing)": "patches/coding-standards.patch"
             }
         }
     },
